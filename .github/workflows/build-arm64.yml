@@ -16,49 +16,33 @@ jobs:
         shell: bash
         run: |
           mkdir source
-          curl -fL \
-            https://github.com/sleep3r/mtproto.zig/archive/refs/tags/v1.15.4.tar.gz \
-            -o source.tar.gz
+          curl -fL https://github.com/sleep3r/mtproto.zig/archive/refs/tags/v1.15.4.tar.gz -o source.tar.gz
           tar -xzf source.tar.gz --strip-components=1 -C source
 
       - name: Patch env path
         working-directory: source
         shell: bash
         run: |
-          grep -n '"/usr/bin/env"' src/proxy/child_process.zig
+          grep -F '"/usr/bin/env"' src/proxy/child_process.zig
           sed -i 's|"/usr/bin/env"|"/opt/bin/env"|' src/proxy/child_process.zig
-          grep -n '"/opt/bin/env"' src/proxy/child_process.zig
+          grep -F '"/opt/bin/env"' src/proxy/child_process.zig
 
       - name: Patch child process environment
         working-directory: source
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          file=src/proxy/http_fetch.zig
+          old='var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});'
+          new='var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = std.Io.Threaded.global_single_threaded.environ.process_environ });'
 
-          path = Path("src/proxy/http_fetch.zig")
-          source = path.read_text()
+          count=$(grep -F -c "$old" "$file" || true)
+          if [ "$count" -ne 2 ]; then
+            echo "Expected 2 matching initializers, found $count"
+            exit 1
+          fi
 
-          old = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});'
-          new = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = std.Io.Threaded.global_single_threaded.environ.process_environ });'
-
-          count = source.count(old)
-          if count != 2:
-              raise SystemExit(
-                  f"Expected exactly 2 matching initializers, found {count}; build aborted"
-              )
-
-          path.write_text(source.replace(old, new))
-
-          updated = path.read_text()
-          if updated.count(new) != 2:
-              raise SystemExit("Patch verification failed")
-
-          print("Patched both Threaded initializers:")
-          for number, line in enumerate(updated.splitlines(), 1):
-              if new in line:
-                  print(f"{number}: {line}")
-          PY
+          sed -i "s|$old|$new|g" "$file"
+          grep -n 'global_single_threaded.environ.process_environ' "$file"
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
