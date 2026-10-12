@@ -1,4 +1,4 @@
-```yaml
+
 name: Build patched MTProxy for Keenetic
 
 on:
