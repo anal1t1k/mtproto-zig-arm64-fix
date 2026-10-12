@@ -69,4 +69,3 @@ jobs:
           name: mtproto-zig-keenetic-arm64
           path: artifact/
           if-no-files-found: error
-
