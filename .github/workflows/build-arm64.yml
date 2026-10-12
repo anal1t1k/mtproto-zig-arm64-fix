@@ -1,4 +1,4 @@
-
+```yaml
 name: Build patched MTProxy for Keenetic
 
 on:
@@ -29,6 +29,37 @@ jobs:
           sed -i 's|"/usr/bin/env"|"/opt/bin/env"|' src/proxy/child_process.zig
           grep -n '"/opt/bin/env"' src/proxy/child_process.zig
 
+      - name: Patch child process environment
+        working-directory: source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/proxy/http_fetch.zig")
+          source = path.read_text()
+
+          old = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});'
+          new = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = std.Io.Threaded.global_single_threaded.environ.process_environ });'
+
+          count = source.count(old)
+          if count != 2:
+              raise SystemExit(
+                  f"Expected exactly 2 matching initializers, found {count}; build aborted"
+              )
+
+          path.write_text(source.replace(old, new))
+
+          updated = path.read_text()
+          if updated.count(new) != 2:
+              raise SystemExit("Patch verification failed")
+
+          print("Patched both Threaded initializers:")
+          for number, line in enumerate(updated.splitlines(), 1):
+              if new in line:
+                  print(f"{number}: {line}")
+          PY
+
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -54,3 +85,4 @@ jobs:
           name: mtproto-zig-keenetic-arm64
           path: artifact/
           if-no-files-found: error
+```
