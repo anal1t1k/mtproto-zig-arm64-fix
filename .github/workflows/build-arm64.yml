@@ -19,7 +19,7 @@ jobs:
           curl -fL https://github.com/sleep3r/mtproto.zig/archive/refs/tags/v1.15.4.tar.gz -o source.tar.gz
           tar -xzf source.tar.gz --strip-components=1 -C source
 
-      - name: Patch curl to absolute path
+      - name: Patch curl and child process
         working-directory: source
         shell: bash
         run: |
@@ -28,75 +28,44 @@ jobs:
 
           p = Path("src/proxy/http_fetch.zig")
           s = p.read_text()
-          old = '"curl"'
-          count = s.count(old)
+          if s.count('"curl"') != 2:
+              raise SystemExit("Unexpected curl source; refusing to build")
+          s = s.replace('"curl"', '"/opt/bin/curl"')
 
-          if count != 2:
-              raise SystemExit(f"Expected 2 curl command strings, found {count}")
-
-          s = s.replace(old, '"/opt/bin/curl"')
+          old = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});'
+          new = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = std.Io.Threaded.global_single_threaded.environ.process_environ });'
+          if s.count(old) != 2:
+              raise SystemExit("Unexpected HTTP fetch IO initializers")
+          s = s.replace(old, new)
           p.write_text(s)
-
-          print("Patched curl command strings:", count)
-          for i, line in enumerate(s.splitlines(), 1):
-              if '"/opt/bin/curl"' in line:
-                  print(f"{i}: {line.strip()}")
-          PY
-
-      - name: Patch child process environment
-        working-directory: source
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
 
           p = Path("src/proxy/child_process.zig")
           s = p.read_text()
-
           old = 'const argv = try allocator.alloc([]const u8, options.argv.len + 2);'
-          new = 'const argv = try allocator.alloc([]const u8, options.argv.len + 3);'
-
           if s.count(old) != 1:
-              raise SystemExit("Could not locate argv allocation")
+              raise SystemExit("Unexpected argv allocation")
+          s = s.replace(old, 'const argv = try allocator.alloc([]const u8, options.argv.len + 3);')
 
-          s = s.replace(old, new)
           old = 'argv[1] = "--default-signal=TERM,INT,HUP,USR1";'
-          new = old + '\n    argv[2] = "PATH=/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/usr/bin:/usr/sbin:/bin:/sbin";'
-
           if s.count(old) != 1:
-              raise SystemExit("Could not locate env option")
+              raise SystemExit("Unexpected env argument")
+          s = s.replace(old, old + '\n    argv[2] = "PATH=/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/usr/bin:/usr/sbin:/bin:/sbin";')
 
-          s = s.replace(old, new)
           old = '@memcpy(argv[2..], options.argv);'
-          new = '@memcpy(argv[3..], options.argv);'
-
           if s.count(old) != 1:
-              raise SystemExit("Could not locate argv copy")
-
-          s = s.replace(old, new)
+              raise SystemExit("Unexpected argv copy")
+          s = s.replace(old, '@memcpy(argv[3..], options.argv);')
           p.write_text(s)
-          print("Patched child process PATH")
-          PY
 
-          grep -n -E 'allocator.alloc|argv\\[[123]\\]|@memcpy' src/proxy/child_process.zig
+          print("=== Verify curl paths ===")
+          for i, line in enumerate(Path("src/proxy/http_fetch.zig").read_text().splitlines(), 1):
+              if "/opt/bin/curl" in line:
+                  print(f"{i}: {line.strip()}")
 
-      - name: Patch HTTP fetch environment
-        working-directory: source
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path("src/proxy/http_fetch.zig")
-          s = p.read_text()
-          old = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});'
-          new = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = std.Io.Threaded.global_single_threaded.environ.process_environ });'
-
-          if s.count(old) != 2:
-              raise SystemExit(f"Expected 2 IO initializers, found {s.count(old)}")
-
-          p.write_text(s.replace(old, new))
-          print("Patched both HTTP fetch IO initializers")
+          print("=== Verify child process ===")
+          for i, line in enumerate(Path("src/proxy/child_process.zig").read_text().splitlines(), 1):
+              if any(x in line for x in ("allocator.alloc", 'argv[1]', 'argv[2]', '@memcpy')):
+                  print(f"{i}: {line.strip()}")
           PY
 
       - name: Install Zig
