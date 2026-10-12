@@ -19,38 +19,85 @@ jobs:
           curl -fL https://github.com/sleep3r/mtproto.zig/archive/refs/tags/v1.15.4.tar.gz -o source.tar.gz
           tar -xzf source.tar.gz --strip-components=1 -C source
 
+      - name: Patch curl to absolute path
+        working-directory: source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("src/proxy/http_fetch.zig")
+          s = p.read_text()
+          old = '"curl"'
+          count = s.count(old)
+
+          if count != 2:
+              raise SystemExit(f"Expected 2 curl command strings, found {count}")
+
+          s = s.replace(old, '"/opt/bin/curl"')
+          p.write_text(s)
+
+          print("Patched curl command strings:", count)
+          for i, line in enumerate(s.splitlines(), 1):
+              if '"/opt/bin/curl"' in line:
+                  print(f"{i}: {line.strip()}")
+          PY
+
       - name: Patch child process environment
         working-directory: source
         shell: bash
         run: |
-          file=src/proxy/child_process.zig
+          python3 - <<'PY'
+          from pathlib import Path
 
-          grep -F 'const argv = try allocator.alloc([]const u8, options.argv.len + 2);' "$file"
-          sed -i 's|options.argv.len + 2|options.argv.len + 3|' "$file"
-          sed -i '/argv\[1\] = "--default-signal=TERM,INT,HUP,USR1";/a\    argv[2] = "PATH=/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/usr/bin:/usr/sbin:/bin:/sbin";' "$file"
-          sed -i 's|@memcpy(argv\[2\.\.\], options.argv);|@memcpy(argv[3..], options.argv);|' "$file"
+          p = Path("src/proxy/child_process.zig")
+          s = p.read_text()
 
-          echo "=== Verify child process patch ==="
-          grep -n -E 'allocator.alloc|argv\[[123]\]|@memcpy' "$file"
+          old = 'const argv = try allocator.alloc([]const u8, options.argv.len + 2);'
+          new = 'const argv = try allocator.alloc([]const u8, options.argv.len + 3);'
+
+          if s.count(old) != 1:
+              raise SystemExit("Could not locate argv allocation")
+
+          s = s.replace(old, new)
+          old = 'argv[1] = "--default-signal=TERM,INT,HUP,USR1";'
+          new = old + '\n    argv[2] = "PATH=/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/usr/bin:/usr/sbin:/bin:/sbin";'
+
+          if s.count(old) != 1:
+              raise SystemExit("Could not locate env option")
+
+          s = s.replace(old, new)
+          old = '@memcpy(argv[2..], options.argv);'
+          new = '@memcpy(argv[3..], options.argv);'
+
+          if s.count(old) != 1:
+              raise SystemExit("Could not locate argv copy")
+
+          s = s.replace(old, new)
+          p.write_text(s)
+          print("Patched child process PATH")
+          PY
+
+          grep -n -E 'allocator.alloc|argv\\[[123]\\]|@memcpy' src/proxy/child_process.zig
 
       - name: Patch HTTP fetch environment
         working-directory: source
         shell: bash
         run: |
-          file=src/proxy/http_fetch.zig
-          old='var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});'
-          new='var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = std.Io.Threaded.global_single_threaded.environ.process_environ });'
+          python3 - <<'PY'
+          from pathlib import Path
 
-          count=$(grep -F -c "$old" "$file" || true)
-          if [ "$count" -ne 2 ]; then
-            echo "Expected 2 matching initializers, found $count"
-            exit 1
-          fi
+          p = Path("src/proxy/http_fetch.zig")
+          s = p.read_text()
+          old = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{});'
+          new = 'var io_instance: std.Io.Threaded = .init(std.heap.page_allocator, .{ .environ = std.Io.Threaded.global_single_threaded.environ.process_environ });'
 
-          sed -i "s|$old|$new|g" "$file"
+          if s.count(old) != 2:
+              raise SystemExit(f"Expected 2 IO initializers, found {s.count(old)}")
 
-          echo "=== Verify HTTP fetch patch ==="
-          grep -n 'global_single_threaded.environ.process_environ' "$file"
+          p.write_text(s.replace(old, new))
+          print("Patched both HTTP fetch IO initializers")
+          PY
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
